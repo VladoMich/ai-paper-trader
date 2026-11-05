@@ -1,2 +1,4 @@
 yfinance
 openai
+pandas
+numpy
