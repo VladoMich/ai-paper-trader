@@ -5,11 +5,10 @@ from datetime import datetime
 import yfinance as yf
 from openai import OpenAI
 
-# Vynútime vytvorenie databázy presne v aktuálnom adresári
 DB_NAME = "paper_trading.db"
 
 def init_db():
-    print(Opening database at: {os.path.abspath(DB_NAME)})
+    print(f"Opening database at: {os.path.abspath(DB_NAME)}")
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute('''
@@ -39,9 +38,8 @@ def init_db():
 if __name__ == "__main__":
     try:
         init_db()
-        # Overíme, či súbor reálne existuje
         if os.path.exists(DB_NAME):
-            print(Fyzický súbor databázy úspešne potvrdený na disku: {DB_NAME})
+            print(f"Fyzický súbor databázy úspešne potvrdený na disku: {DB_NAME}")
         else:
             print("CHYBA: Súbor databázy sa nenašiel!")
     except Exception as e:
