@@ -31,11 +31,15 @@ jobs:
         run: |
           python -u agent.py
 
-      - name: Uložiť databázu do GitHube
+      - name: Commit and push DB
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "bot@users.noreply.github.com"
+          
+          # Vynútime vytvorenie prázdneho súboru, ak by ho Python náhodou nestihol vytvoriť
+          touch paper_trading.db
+          
           git pull origin main --rebase || true
           git add paper_trading.db
-          git commit -m "Auto-update paper trading DB" || echo "No changes"
+          git commit -m "Auto-update paper trading DB" || echo "No changes to commit"
           git push origin main
