@@ -13,16 +13,10 @@ st.markdown(
 )
 
 
-# Pripojenie k databáze (predpokladá, že paper_trading.db je v rovnakom priečinku)
 def load_data():
   conn = sqlite3.connect("paper_trading.db")
-
-  # Načítame stav účtu / hotovosti
   account_df = pd.read_sql("SELECT * FROM account", conn)
-
-  # Načítame históriu obchodov
   trades_df = pd.read_sql("SELECT * FROM trades ORDER BY timestamp DESC", conn)
-
   conn.close()
   return account_df, trades_df
 
@@ -30,7 +24,6 @@ def load_data():
 try:
   account_df, trades_df = load_data()
 
-  # 1. Metriky (KPI)
   current_cash = (
       account_df["cash"].iloc[0] if not account_df.empty else 1000.0
   )
@@ -38,22 +31,16 @@ try:
 
   st.divider()
 
-  # 2. Tabuľka obchodov
-  st.sub_header("📜 História virtuálnych obchodov")
+  # OPRAVA: st.subheader namiesto st.sub_header
+  st.subheader("📜 História virtuálnych obchodov")
+
   if not trades_df.empty:
     st.dataframe(trades_df, use_container_width=True)
   else:
-    st.info(
-        "Zatiaľ neboli vykonané žiadne obchody. Agent zatiaľ volí iba HOLD"
-        " alebo čaká na ďalšie spustenie."
-    )
+    st.info("Zatiaľ neboli vykonané žiadne záznamy v databáze.")
 
 except Exception as e:
   st.warning(
       "Zatiaľ sa nepodarilo nájsť databázu `paper_trading.db` (alebo je prázdna)."
       f" Chyba: {e}"
-  )
-  st.info(
-      "Počkaj, kým GitHub Actions bot urobí prvý úspešný beh a stiahne databázu"
-      " do repozitára."
   )
