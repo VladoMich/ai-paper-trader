@@ -5,7 +5,10 @@ from datetime import datetime
 import yfinance as yf
 from openai import OpenAI
 
+print("Šartujem skript agenta...")
+
 def init_db():
+    print("Pripájam sa do SQLite databázy...")
     conn = sqlite3.connect("paper_trading.db")
     cursor = conn.cursor()
     cursor.execute('''
@@ -30,8 +33,10 @@ def init_db():
         cursor.execute("INSERT INTO account (id, cash) VALUES (1, 1000.0)")
     conn.commit()
     conn.close()
+    print("Databáza je pripravená.")
 
 def fetch_market_data_with_news(ticker):
+    print(f"Sťahujem dáta pre {ticker} z Yahoo Finance...")
     stock = yf.Ticker(ticker)
     hist = stock.history(period="1mo")
     
@@ -39,13 +44,16 @@ def fetch_market_data_with_news(ticker):
     sma_20 = float(hist['Close'].rolling(window=20).mean().iloc[-1])
     change_5d = float(((current_price - hist['Close'].iloc[-5]) / hist['Close'].iloc[-5]) * 100)
     
-    raw_news = getattr(stock, 'news', [])
     headlines = []
-    if raw_news:
-        for item in raw_news[:5]:
-            title = item.get('title') or item.get('content', {}).get('title')
-            if title:
-                headlines.append(title)
+    try:
+        raw_news = getattr(stock, 'news', [])
+        if raw_news:
+            for item in raw_news[:5]:
+                title = item.get('title') or item.get('content', {}).get('title')
+                if title:
+                    headlines.append(title)
+    except Exception as e:
+        print(f"Varovanie: Nepodarilo sa stiahnuť správy: {e}")
                 
     return {
         "ticker": ticker,
@@ -63,18 +71,12 @@ def get_ai_trade_recommendation(market_data, current_cash):
     client = OpenAI(api_key=api_key)
     
     prompt = f"""
-    Si konzervatívny kvantitatívny analytik. Vyhodnot nasledujúce trhové dáta a mediálny sentiment:
-    
+    Si konzervatívny kvantitatívny analytik. Vyhodnot nasledujúce trhové dáta:
     Ticker: {market_data['ticker']}
     Aktuálna cena: {market_data['current_price']} EUR
-    SMA 20 (priemer): {market_data['sma_20']} EUR
+    SMA 20: {market_data['sma_20']} EUR
     Zmena za 5 dní: {market_data['change_5d']}%
-    
-    Posledné titulky správ z trhu:
-    {json.dumps(market_data['recent_headlines'], indent=2)}
-    
-    K dispozícii je celková hotovosť: {current_cash} EUR.
-    Risk pravidlo: Maximálne 10% kapitálu na jeden obchod. Ak sú správy negatívne, zvoľ "HOLD".
+    Dostupná hotovosť: {current_cash} EUR.
     
     Vráť odpoveď EXKLUZÍVNE vo formáte JSON:
     {{
@@ -82,7 +84,7 @@ def get_ai_trade_recommendation(market_data, current_cash):
         "shares": float,
         "sentiment_score": "POSITIVE" | "NEGATIVE" | "NEUTRAL",
         "confidence": float (0-1),
-        "reasoning": "Stručné zdôvodnenie na 2-3 vety."
+        "reasoning": "Stručné zdôvodnenie."
     }}
     """
     
@@ -128,9 +130,7 @@ def execute_virtual_trade(decision, market_data):
 
 if __name__ == "__main__":
     try:
-        print("Inicializujem databázu...")
         init_db()
-        print("Sťahujem dáta z Yahoo Finance...")
         data = fetch_market_data_with_news("NVDA")
         
         conn = sqlite3.connect("paper_trading.db")
@@ -139,7 +139,6 @@ if __name__ == "__main__":
         current_cash = c.fetchone()[0]
         conn.close()
         
-        print(f"Získavam analýzu od OpenAI pre {data['ticker']}...")
         decision = get_ai_trade_recommendation(data, current_cash)
         execute_virtual_trade(decision, data)
         print("Skript úspešne dokončený, databáza paper_trading.db vytvorená.")
