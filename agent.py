@@ -5,7 +5,6 @@ from datetime import datetime
 import yfinance as yf
 from openai import OpenAI
 
-# 1. INICIALIZÁCIA VIRTUÁLNEHO ÚČTU (SQLite)
 def init_db():
     conn = sqlite3.connect("paper_trading.db")
     cursor = conn.cursor()
@@ -32,16 +31,15 @@ def init_db():
     conn.commit()
     conn.close()
 
-# 2. ZBER TRHOVÝCH DÁT A SPRÁV
 def fetch_market_data_with_news(ticker):
     stock = yf.Ticker(ticker)
     hist = stock.history(period="1mo")
     
-    current_price = hist['Close'].iloc[-1]
-    sma_20 = hist['Close'].rolling(window=20).mean().iloc[-1]
-    change_5d = ((current_price - hist['Close'].iloc[-5]) / hist['Close'].iloc[-5]) * 100
+    current_price = float(hist['Close'].iloc[-1])
+    sma_20 = float(hist['Close'].rolling(window=20).mean().iloc[-1])
+    change_5d = float(((current_price - hist['Close'].iloc[-5]) / hist['Close'].iloc[-5]) * 100)
     
-    raw_news = stock.news
+    raw_news = getattr(stock, 'news', [])
     headlines = []
     if raw_news:
         for item in raw_news[:5]:
@@ -57,7 +55,6 @@ def fetch_market_data_with_news(ticker):
         "recent_headlines": headlines
     }
 
-# 3. AI ROZHODOVANIE S VYUŽITÍM SPRÁV A SENTIMENTU
 def get_ai_trade_recommendation(market_data, current_cash):
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -97,7 +94,6 @@ def get_ai_trade_recommendation(market_data, current_cash):
     
     return json.loads(response.choices[0].message.content)
 
-# 4. EXEKÚCIA VIRTUÁLNEHO OBCHODU
 def execute_virtual_trade(decision, market_data):
     conn = sqlite3.connect("paper_trading.db")
     cursor = conn.cursor()
