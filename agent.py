@@ -101,7 +101,7 @@ def get_ai_trade_recommendation(market_data, current_cash):
     return json.loads(response.choices[0].message.content)
 
 def execute_virtual_trade(decision, market_data):
-    conn = sqlite3.connect("paper_trading.db")
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     cursor.execute("SELECT cash FROM account WHERE id = 1")
