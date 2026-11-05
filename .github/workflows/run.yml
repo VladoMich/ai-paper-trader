@@ -1,0 +1,39 @@
+name: Paper Trader
+
+on:
+  workflow_dispatch:
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install yfinance openai pandas numpy
+
+      - name: Run agent
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python -u agent.py
+
+      - name: Push database to GitHub
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "bot@users.noreply.github.com"
+          git pull origin main --rebase || true
+          ls -la paper_trading.db
+          git add paper_trading.db
+          git commit -m "Update database" || echo "No changes"
+          git push origin main
