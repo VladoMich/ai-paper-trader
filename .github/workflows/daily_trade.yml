@@ -26,7 +26,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          python agent.py
+          python -u agent.py
 
       - name: 5. Uložiť zmeny v databáze späť do GitHube
         run: |
