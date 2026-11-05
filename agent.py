@@ -5,7 +5,34 @@ from datetime import datetime
 import yfinance as yf
 from openai import OpenAI
 
-# 1. ROZŠÍRENÝ ZBER TRHOVÝCH DÁT A SPRÁV
+# 1. INICIALIZÁCIA VIRTUÁLNEHO ÚČTU (SQLite)
+def init_db():
+    conn = sqlite3.connect("paper_trading.db")
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS account (
+            id INTEGER PRIMARY KEY,
+            cash REAL
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            ticker TEXT,
+            action TEXT,
+            shares REAL,
+            price REAL,
+            reasoning TEXT
+        )
+    ''')
+    cursor.execute("SELECT COUNT(*) FROM account")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO account (id, cash) VALUES (1, 1000.0)")
+    conn.commit()
+    conn.close()
+
+# 2. ZBER TRHOVÝCH DÁT A SPRÁV
 def fetch_market_data_with_news(ticker):
     stock = yf.Ticker(ticker)
     hist = stock.history(period="1mo")
@@ -14,13 +41,10 @@ def fetch_market_data_with_news(ticker):
     sma_20 = hist['Close'].rolling(window=20).mean().iloc[-1]
     change_5d = ((current_price - hist['Close'].iloc[-5]) / hist['Close'].iloc[-5]) * 100
     
-    # Sťahovanie posledných správ cez yfinance
     raw_news = stock.news
     headlines = []
     if raw_news:
-        # Vyberieme napr. posledných 5 titulkov správ
         for item in raw_news[:5]:
-            # yfinance štruktúra môže obsahovať 'title' alebo 'content' -> 'title'
             title = item.get('title') or item.get('content', {}).get('title')
             if title:
                 headlines.append(title)
@@ -33,9 +57,13 @@ def fetch_market_data_with_news(ticker):
         "recent_headlines": headlines
     }
 
-# 2. AI ROZHODOVANIE S VYUŽITÍM SPRÁV A SENTIMENTU
+# 3. AI ROZHODOVANIE S VYUŽITÍM SPRÁV A SENTIMENTU
 def get_ai_trade_recommendation(market_data, current_cash):
-    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("Chýba OPENAI_API_KEY v premenných prostredia!")
+        
+    client = OpenAI(api_key=api_key)
     
     prompt = f"""
     Si konzervatívny kvantitatívny analytik. Vyhodnot nasledujúce trhové dáta a mediálny sentiment:
@@ -45,11 +73,11 @@ def get_ai_trade_recommendation(market_data, current_cash):
     SMA 20 (priemer): {market_data['sma_20']} EUR
     Zmena za 5 dní: {market_data['change_5d']}%
     
-    Posledné titulky správ z trhu (vyhodnot ich sentiment - pozitívny/negatívny/neutrálny):
+    Posledné titulky správ z trhu:
     {json.dumps(market_data['recent_headlines'], indent=2)}
     
     K dispozícii je celková hotovosť: {current_cash} EUR.
-    Risk pravidlo: Maximálne 10% kapitálu na jeden obchod. Ak sú správy extrémne negatívne alebo je trh v neistote, zvoľ "HOLD".
+    Risk pravidlo: Maximálne 10% kapitálu na jeden obchod. Ak sú správy negatívne, zvoľ "HOLD".
     
     Vráť odpoveď EXKLUZÍVNE vo formáte JSON:
     {{
@@ -57,7 +85,7 @@ def get_ai_trade_recommendation(market_data, current_cash):
         "shares": float,
         "sentiment_score": "POSITIVE" | "NEGATIVE" | "NEUTRAL",
         "confidence": float (0-1),
-        "reasoning": "Stručné zdôvodnenie vrátane vplyvu správ na 2-3 vety."
+        "reasoning": "Stručné zdôvodnenie na 2-3 vety."
     }}
     """
     
@@ -68,3 +96,57 @@ def get_ai_trade_recommendation(market_data, current_cash):
     )
     
     return json.loads(response.choices[0].message.content)
+
+# 4. EXEKÚCIA VIRTUÁLNEHO OBCHODU
+def execute_virtual_trade(decision, market_data):
+    conn = sqlite3.connect("paper_trading.db")
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT cash FROM account WHERE id = 1")
+    row = cursor.fetchone()
+    cash = row[0] if row else 1000.0
+    
+    ticker = market_data['ticker']
+    price = market_data['current_price']
+    action = decision.get('action', 'HOLD')
+    shares = decision.get('shares', 0)
+    reasoning = decision.get('reasoning', 'Bez dôvodu')
+    
+    print(f"AI rozhodnutie pre {ticker}: {action} ({shares} ks) - {reasoning}")
+    
+    if action == "BUY":
+        cost = shares * price
+        if cost <= cash:
+            new_cash = cash - cost
+            cursor.execute("UPDATE account SET cash = ? WHERE id = 1", (new_cash,))
+            cursor.execute(
+                "INSERT INTO trades (timestamp, ticker, action, shares, price, reasoning) VALUES (?, ?, ?, ?, ?, ?)",
+                (datetime.now().isoformat(), ticker, action, shares, price, reasoning)
+            )
+            print(f"✅ ÚSPEŠNÝ NÁKUP: {shares}x {ticker} po {price}€.")
+        else:
+            print("❌ Nedostatok hotovosti na nákup.")
+            
+    conn.commit()
+    conn.close()
+
+if __name__ == "__main__":
+    try:
+        print("Inicializujem databázu...")
+        init_db()
+        print("Sťahujem dáta z Yahoo Finance...")
+        data = fetch_market_data_with_news("NVDA")
+        
+        conn = sqlite3.connect("paper_trading.db")
+        c = conn.cursor()
+        c.execute("SELECT cash FROM account WHERE id = 1")
+        current_cash = c.fetchone()[0]
+        conn.close()
+        
+        print(f"Získavam analýzu od OpenAI pre {data['ticker']}...")
+        decision = get_ai_trade_recommendation(data, current_cash)
+        execute_virtual_trade(decision, data)
+        print("Skript úspešne dokončený, databáza paper_trading.db vytvorená.")
+    except Exception as e:
+        print(f"CHYBA V SKRIPTE: {str(e)}")
+        raise e
