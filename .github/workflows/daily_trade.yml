@@ -1,0 +1,37 @@
+name: AI Paper Trading Agent
+
+on:
+  schedule:
+    - cron: '0 9 * * 1-5' # Spustí sa každý pracovný deň (Pondelok - Piatok) o 9:00 UTC
+  workflow_dispatch:      # Umožňuje spustiť skript aj manuálne jedným klikom na GitHube
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. Stiahnuť kód z repozitára
+        uses: actions/checkout@v4
+
+      - name: 2. Nastaviť Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 3. Nainštalovať závislosti
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 4. Spustiť AI Agenta
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python agent.py
+
+      - name: 5. Uložiť zmeny v databáze späť do GitHube
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "bot@users.noreply.github.com"
+          git add paper_trading.db || true
+          git commit -m "Auto-update paper trading DB after daily run" || true
+          git push || true
