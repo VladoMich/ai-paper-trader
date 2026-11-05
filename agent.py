@@ -7,9 +7,13 @@ from openai import OpenAI
 
 print("Šartujem skript agenta...")
 
+# Získame aktuálny adresár, kde beží skript
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "paper_trading.db")
+
 def init_db():
     print("Pripájam sa do SQLite databázy...")
-    conn = sqlite3.connect("paper_trading.db")
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS account (
