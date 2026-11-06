@@ -1,6 +1,6 @@
-import json
 import os
 import sqlite3
+import json
 import time
 from datetime import datetime
 import yfinance as yf
@@ -8,6 +8,8 @@ from google import genai
 from google.genai import types
 
 DB_NAME = "paper_trading.db"
+# Zoznam tickerov, ktoré bude agent každý deň prechádzať
+TICKERS = ["NVDA", "AAPL", "MSFT", "TSLA", "GOOGL"]
 
 def init_db():
     print(f"Opening database at: {os.path.abspath(DB_NAME)}")
@@ -42,6 +44,9 @@ def fetch_market_data(ticker):
     stock = yf.Ticker(ticker)
     hist = stock.history(period="1mo")
     
+    if hist.empty:
+        raise ValueError(f"Nepodarilo sa stiahnuť dáta pre {ticker}")
+        
     current_price = float(hist['Close'].iloc[-1])
     sma_20 = float(hist['Close'].rolling(window=20).mean().iloc[-1])
     change_5d = float(((current_price - hist['Close'].iloc[-5]) / hist['Close'].iloc[-5]) * 100)
@@ -61,27 +66,26 @@ def get_ai_trade_recommendation(market_data, current_cash):
     client = genai.Client(api_key=api_key)
     
     prompt = f"""
-    Si konzervatívny kvantitatívny analytik. Vyhodnot nasledujúce trhové dáta pre akciu {market_data['ticker']}:
+    Si konzervatívny kvantitatívny analytik. Vyhodnot trhové dáta pre akciu {market_data['ticker']}:
     - Aktuálna cena: {market_data['current_price']} EUR
     - SMA 20 (kĺzavý priemer): {market_data['sma_20']} EUR
     - Zmena za 5 dní: {market_data['change_5d']}%
-    - Dostupná hotovosť: {current_cash} EUR.
+    - Celková dostupná hotovosť na účte: {current_cash} EUR.
     
-    Risk pravidlo: Maximálne 10% hotovosti na jeden obchod. Zvoľ "BUY", "SELL" alebo "HOLD".
+    Pravidlá tradingu:
+    - Ak vidíš silný rastový trend (napr. cena nad SMA 20), môžeš zvoliť "BUY".
+    - Vypočítaj presný počet akcií (`shares`), ktoré chceš kúpiť, pričom celková suma nesmie presiahnuť 20% dostupnej hotovosti.
+    - Ak si nie si istý alebo trh klesá, zvoľ "HOLD" (vtedy zadaj shares: 0).
     
     Vráť odpoveď EXKLUZÍVNE vo formáte JSON s týmito kľúčmi:
-    action (string: BUY, SELL alebo HOLD),
+    action (string: "BUY" alebo "HOLD"),
     shares (float),
     reasoning (string: stručné zdôvodnenie).
     """
     
-    # Retry mechanizmus: 6 pokusov, pauza 10 sekúnd medzi nimi
-    max_retries = 6
-    delay_seconds = 10
-
+    max_retries = 5
     for attempt in range(1, max_retries + 1):
         try:
-            print(f"Pokus {attempt}/{max_retries}: Volám Gemini API (gemini-1.5-flash)...")
             response = client.models.generate_content(
                 model='gemini-3.8-flash',
                 contents=prompt,
@@ -91,20 +95,18 @@ def get_ai_trade_recommendation(market_data, current_cash):
             )
             return json.loads(response.text)
         except Exception as e:
-            print(f"Pokus {attempt} zlyhal s chybou: {e}")
+            print(f"Pokus {attempt} zlyhal: {e}")
             if attempt < max_retries:
-                print(f"Čakám {delay_seconds} sekúnd pred ďalším pokusom...")
-                time.sleep(delay_seconds)
+                time.sleep(5)
             else:
-                raise RuntimeError("Všetky pokusy o kontaktovanie Gemini API zlyhali kvôli preťaženiu serverov.")
+                raise RuntimeError("Gemini API zlyhalo po viacerých pokusoch.")
 
 def execute_virtual_trade(decision, market_data):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
     cursor.execute("SELECT cash FROM account WHERE id = 1")
-    row = cursor.fetchone()
-    cash = row[0] if row else 1000.0
+    cash = cursor.fetchone()[0]
     
     ticker = market_data['ticker']
     price = market_data['current_price']
@@ -112,7 +114,7 @@ def execute_virtual_trade(decision, market_data):
     shares = float(decision.get('shares', 0))
     reasoning = decision.get('reasoning', 'Bez dôvodu')
     
-    print(f"AI rozhodnutie (Gemini) pre {ticker}: {action} ({shares} ks) - {reasoning}")
+    print(f"AI rozhodnutie pre {ticker}: {action} ({shares} ks) - {reasoning}")
     
     if action == "BUY":
         cost = shares * price
@@ -123,12 +125,12 @@ def execute_virtual_trade(decision, market_data):
                 "INSERT INTO trades (timestamp, ticker, action, shares, price, reasoning) VALUES (?, ?, ?, ?, ?, ?)",
                 (datetime.now().isoformat(), ticker, action, shares, price, reasoning)
             )
-            print(f"✅ ÚSPEŠNÝ NÁKUP: {shares}x {ticker} po {price}€.")
+            print(f"✅ NÁKUP: {shares}x {ticker} za {cost:.2f}€")
         else:
-            print("❌ Nedostatok hotovosti alebo neplatný počet akcii, mením na HOLD.")
+            print("❌ Nedostatok hotovosti pre tento nákup, mením na HOLD.")
             cursor.execute(
                 "INSERT INTO trades (timestamp, ticker, action, shares, price, reasoning) VALUES (?, ?, ?, ?, ?, ?)",
-                (datetime.now().isoformat(), ticker, "HOLD", 0, price, "Pokus o nákup zlyhal: " + reasoning)
+                (datetime.now().isoformat(), ticker, "HOLD", 0, price, "Nedostatok hotovosti na nákup: " + reasoning)
             )
     else:
         cursor.execute(
@@ -140,19 +142,23 @@ def execute_virtual_trade(decision, market_data):
     conn.close()
 
 if __name__ == "__main__":
-    try:
-        init_db()
-        market_data = fetch_market_data("NVDA")
-        
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute("SELECT cash FROM account WHERE id = 1")
-        current_cash = cursor.fetchone()[0]
-        conn.close()
-        
-        decision = get_ai_trade_recommendation(market_data, current_cash)
-        execute_virtual_trade(decision, market_data)
-        print("Agent úspešne dokončil analýzu s Gemini.")
-    except Exception as e:
-        print(f"KRITICKÁ CHYBA: {e}")
-        raise e
+    init_db()
+    for ticker in TICKERS:
+        try:
+            market_data = fetch_market_data(ticker)
+            
+            conn = sqlite3.connect(DB_NAME)
+            cursor = conn.cursor()
+            cursor.execute("SELECT cash FROM account WHERE id = 1")
+            current_cash = cursor.fetchone()[0]
+            conn.close()
+            
+            decision = get_ai_trade_recommendation(market_data, current_cash)
+            execute_virtual_trade(decision, market_data)
+            
+            # Krátka pauza medzi tickermi, aby sme nepreťažili API
+            time.sleep(2)
+        except Exception as e:
+            print(f"Chyba pri spracovaní tickera {ticker}: {e}")
+            
+    print("Agent úspešne prešiel všetky tickery.")
