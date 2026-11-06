@@ -1,6 +1,7 @@
+import json
 import os
 import sqlite3
-import json
+import time
 from datetime import datetime
 import yfinance as yf
 from google import genai
@@ -57,7 +58,6 @@ def get_ai_trade_recommendation(market_data, current_cash):
     if not api_key:
         raise ValueError("Chýba GEMINI_API_KEY v premenných prostredia!")
         
-    # Inicializácia nového Gemini klienta
     client = genai.Client(api_key=api_key)
     
     prompt = f"""
@@ -75,16 +75,28 @@ def get_ai_trade_recommendation(market_data, current_cash):
     reasoning (string: stručné zdôvodnenie).
     """
     
-    # Použijeme rýchly a inteligentný gemini-2.5-flash model
-    response = client.models.generate_content(
-        model='gemini-3.8-flash',
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-        ),
-    )
-    
-    return json.loads(response.text)
+    # Retry mechanizmus: 6 pokusov, pauza 10 sekúnd medzi nimi
+    max_retries = 6
+    delay_seconds = 10
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"Pokus {attempt}/{max_retries}: Volám Gemini API (gemini-1.5-flash)...")
+            response = client.models.generate_content(
+                model='gemini-1.5-flash',
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                ),
+            )
+            return json.loads(response.text)
+        except Exception as e:
+            print(f"Pokus {attempt} zlyhal s chybou: {e}")
+            if attempt < max_retries:
+                print(czekam {delay_seconds} sekúnd pred ďalším pokusom...")
+                time.sleep(delay_seconds)
+            else:
+                raise RuntimeError("Všetky pokusy o kontaktovanie Gemini API zlyhali kvôli preťaženiu serverov.")
 
 def execute_virtual_trade(decision, market_data):
     conn = sqlite3.connect(DB_NAME)
