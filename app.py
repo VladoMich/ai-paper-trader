@@ -25,7 +25,6 @@ try:
       account_df["cash"].iloc[0] if not account_df.empty else 1000.0
   )
 
-  # Vypočítajme hodnotu nakúpených aktív
   invested_value = 0.0
   if not trades_df.empty:
     buys = trades_df[trades_df["action"] == "BUY"]
@@ -39,7 +38,6 @@ try:
   col1.metric(
       label="Celková hodnota portfólia", value=f"{total_portfolio_value:.2f} EUR"
   )
-  # OPRAVA: doplnená chýbajúca úvodzovka tu:
   col2.metric(label="Voľná hotovosť (Cash)", value=f"{current_cash:.2f} EUR")
   col3.metric(label="Celkom investované", value=f"{invested_value:.2f} EUR")
 
@@ -48,21 +46,19 @@ try:
   st.subheader("📜 História virtuálnych obchodov a rozhodnutí")
 
   if not trades_df.empty:
-    st.dataframe(
-        trades_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "reasoning": st.column_config.TextColumn(
-                "Zdôvodnenie AI", width="large"
-            ),
-            "timestamp": "Čas záznamu",
-            "ticker": "Ticker",
-            "action": "Akcia",
-            "shares": "Počet ks",
-            "price": "Cena (€)",
-        },
-    )
+    # 1. Klasická tabuľka (rýchly prehľad)
+    st.dataframe(trades_df, use_container_width=True, hide_index=True)
+
+    st.markdown("### 🔍 Detailné zdôvodnenia AI pre jednotlivé kroky")
+    # 2. Prehľadné karty pre každý záznam, kde sa text nikdy neodreže
+    for index, row in trades_df.iterrows():
+      badge = "🟢" if row["action"] == "BUY" else "⚪"
+      with st.expander(
+          f"{badge} [{row['timestamp'][:19]}] Ticker: **{row['ticker']}** |"
+          f" Akcia: **{row['action']}** | Počet: {row['shares']} ks"
+      ):
+        st.markdown(f"**Cena:** {row['price']} EUR")
+        st.markdown(f"**Zdôvodnenie od AI:** {row['reasoning']}")
   else:
     st.info("Zatiaľ neboli zaznamenané žiadne obchody.")
 
