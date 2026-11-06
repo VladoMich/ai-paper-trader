@@ -83,7 +83,7 @@ def get_ai_trade_recommendation(market_data, current_cash):
         try:
             print(f"Pokus {attempt}/{max_retries}: Volám Gemini API (gemini-1.5-flash)...")
             response = client.models.generate_content(
-                model='gemini-1.5-flash',
+                model='gemini-2.0-flash',
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
