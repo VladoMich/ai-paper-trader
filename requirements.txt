@@ -1,4 +1,4 @@
 yfinance
-openai
+google-genai
 pandas
 numpy
