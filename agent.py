@@ -77,7 +77,7 @@ def get_ai_trade_recommendation(market_data, current_cash):
     
     # Použijeme rýchly a inteligentný gemini-2.5-flash model
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-3.8-flash',
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
