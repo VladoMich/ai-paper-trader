@@ -93,7 +93,7 @@ def get_ai_trade_recommendation(market_data, current_cash):
         except Exception as e:
             print(f"Pokus {attempt} zlyhal s chybou: {e}")
             if attempt < max_retries:
-                print(czekam {delay_seconds} sekúnd pred ďalším pokusom...")
+                print(f"Čakám {delay_seconds} sekúnd pred ďalším pokusom...")
                 time.sleep(delay_seconds)
             else:
                 raise RuntimeError("Všetky pokusy o kontaktovanie Gemini API zlyhali kvôli preťaženiu serverov.")
