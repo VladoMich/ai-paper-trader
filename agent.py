@@ -1,9 +1,10 @@
-import json
 import os
 import sqlite3
+import json
 from datetime import datetime
 import yfinance as yf
-from openai import OpenAI
+from google import genai
+from google.genai import types
 
 DB_NAME = "paper_trading.db"
 
@@ -52,36 +53,38 @@ def fetch_market_data(ticker):
     }
 
 def get_ai_trade_recommendation(market_data, current_cash):
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise ValueError("Chýba OPENAI_API_KEY v premenných prostredia!")
+        raise ValueError("Chýba GEMINI_API_KEY v premenných prostredia!")
         
-    client = OpenAI(api_key=api_key)
+    # Inicializácia nového Gemini klienta
+    client = genai.Client(api_key=api_key)
     
     prompt = f"""
     Si konzervatívny kvantitatívny analytik. Vyhodnot nasledujúce trhové dáta pre akciu {market_data['ticker']}:
     - Aktuálna cena: {market_data['current_price']} EUR
     - SMA 20 (kĺzavý priemer): {market_data['sma_20']} EUR
-    - Zмена za 5 dní: {market_data['change_5d']}%
+    - Zmena za 5 dní: {market_data['change_5d']}%
     - Dostupná hotovosť: {current_cash} EUR.
     
-    Risk pravidlo: Maximálne 10% hotovosti na jeden obchod. Ak si istý, zvoľ "BUY" alebo "SELL", inak "HOLD".
+    Risk pravidlo: Maximálne 10% hotovosti na jeden obchod. Zvoľ "BUY", "SELL" alebo "HOLD".
     
-    Vráť odpoveď EXKLUZÍVNE vo formáte JSON:
-    {{
-        "action": "BUY" | "SELL" | "HOLD",
-        "shares": float,
-        "reasoning": "Stručné zdôvodnenie na 1-2 vety."
-    }}
+    Vráť odpoveď EXKLUZÍVNE vo formáte JSON s týmito kľúčmi:
+    action (string: BUY, SELL alebo HOLD),
+    shares (float),
+    reasoning (string: stručné zdôvodnenie).
     """
     
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"}
+    # Použijeme rýchly a inteligentný gemini-2.5-flash model
+    response = client.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+        ),
     )
     
-    return json.loads(response.choices[0].message.content)
+    return json.loads(response.text)
 
 def execute_virtual_trade(decision, market_data):
     conn = sqlite3.connect(DB_NAME)
@@ -97,7 +100,7 @@ def execute_virtual_trade(decision, market_data):
     shares = float(decision.get('shares', 0))
     reasoning = decision.get('reasoning', 'Bez dôvodu')
     
-    print(f"AI rozhodnutie pre {ticker}: {action} ({shares} ks) - {reasoning}")
+    print(f"AI rozhodnutie (Gemini) pre {ticker}: {action} ({shares} ks) - {reasoning}")
     
     if action == "BUY":
         cost = shares * price
@@ -111,13 +114,11 @@ def execute_virtual_trade(decision, market_data):
             print(f"✅ ÚSPEŠNÝ NÁKUP: {shares}x {ticker} po {price}€.")
         else:
             print("❌ Nedostatok hotovosti alebo neplatný počet akcii, mením na HOLD.")
-            action = "HOLD"
             cursor.execute(
                 "INSERT INTO trades (timestamp, ticker, action, shares, price, reasoning) VALUES (?, ?, ?, ?, ?, ?)",
-                (datetime.now().isoformat(), ticker, "HOLD", 0, price, "Pokus o nákup zlyhal (nedostatok hotovosti): " + reasoning)
+                (datetime.now().isoformat(), ticker, "HOLD", 0, price, "Pokus o nákup zlyhal: " + reasoning)
             )
     else:
-        # Zaznamenáme aj HOLD, aby sme mali históriu rozhodnutí v tabuľke trades
         cursor.execute(
             "INSERT INTO trades (timestamp, ticker, action, shares, price, reasoning) VALUES (?, ?, ?, ?, ?, ?)",
             (datetime.now().isoformat(), ticker, action, 0, price, reasoning)
@@ -139,7 +140,7 @@ if __name__ == "__main__":
         
         decision = get_ai_trade_recommendation(market_data, current_cash)
         execute_virtual_trade(decision, market_data)
-        print("Agent úspešne dokončil obchodnú analýzu.")
+        print("Agent úspešne dokončil analýzu s Gemini.")
     except Exception as e:
         print(f"KRITICKÁ CHYBA: {e}")
         raise e
