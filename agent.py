@@ -8,7 +8,6 @@ from google import genai
 from google.genai import types
 
 DB_NAME = "paper_trading.db"
-# Zoznam tickerov, ktoré bude agent každý deň prechádzať
 TICKERS = ["NVDA", "AAPL", "MSFT", "TSLA", "GOOGL"]
 
 def init_db():
@@ -32,6 +31,15 @@ def init_db():
             reasoning TEXT
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS portfolio_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            cash REAL,
+            holdings_value REAL,
+            total_value REAL
+        )
+    ''')
     cursor.execute("SELECT COUNT(*) FROM account")
     if cursor.fetchone()[0] == 0:
         cursor.execute("INSERT INTO account (id, cash) VALUES (1, 1000.0)")
@@ -39,74 +47,55 @@ def init_db():
     conn.close()
     print("Databáza úspešne inicializovaná.")
 
-def fetch_market_data(ticker):
-    print(f"Sťahujem dáta pre {ticker} z Yahoo Finance...")
+def fetch_extended_market_data(ticker):
+    print(f"Sťahujem rozšírené dáta pre {ticker} z Yahoo Finance...")
     stock = yf.Ticker(ticker)
-    hist = stock.history(period="1mo")
-    
+    hist = stock.history(period="3mo")
+
     if hist.empty:
         raise ValueError(f"Nepodarilo sa stiahnuť dáta pre {ticker}")
-        
-    current_price = float(hist['Close'].iloc[-1])
-    sma_20 = float(hist['Close'].rolling(window=20).mean().iloc[-1])
-    change_5d = float(((current_price - hist['Close'].iloc[-5]) / hist['Close'].iloc[-5]) * 100)
-    
+
+    current_price = float(hist["Close"].iloc[-1])
+    sma_20 = float(hist["Close"].rolling(window=20).mean().iloc[-1])
+    change_5d = float(
+        ((current_price - hist["Close"].iloc[-5]) / hist["Close"].iloc[-5]) * 100
+    )
+
+    # Výpočet RSI (14-dňové)
+    delta = hist["Close"].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    rsi_14 = float(100 - (100 / (1 + rs)).iloc[-1])
+
+    # 52-týždňový rozsah
+    year_hist = stock.history(period="1y")
+    low_52 = float(year_hist["Low"].min())
+    high_52 = float(year_hist["High"].max())
+
     return {
         "ticker": ticker,
         "current_price": round(current_price, 2),
         "sma_20": round(sma_20, 2),
-        "change_5d": round(change_5d, 2)
+        "change_5d": round(change_5d, 2),
+        "rsi_14": round(rsi_14, 2),
+        "low_52": round(low_52, 2),
+        "high_52": round(high_52, 2),
     }
 
-def fetch_extended_market_data(ticker):
-  print(f"Sťahujem rozšírené dáta pre {ticker} z Yahoo Finance...")
-  stock = yf.Ticker(ticker)
-  hist = stock.history(period="3mo")
-
-  if hist.empty:
-    raise ValueError(f"Nepodarilo sa stiahnuť dáta pre {ticker}")
-
-  current_price = float(hist["Close"].iloc[-1])
-  sma_20 = float(hist["Close"].rolling(window=20).mean().iloc[-1])
-  change_5d = float(
-      ((current_price - hist["Close"].iloc[-5]) / hist["Close"].iloc[-5]) * 100
-  )
-
-  # Výpočet RSI (14-dňové)
-  delta = hist["Close"].diff()
-  gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-  loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-  rs = gain / loss
-  rsi_14 = float(100 - (100 / (1 + rs)).iloc[-1])
-
-  # 52-týždňový rozsah
-  year_hist = stock.history(period="1y")
-  low_52 = float(year_hist["Low"].min())
-  high_52 = float(year_hist["High"].max())
-
-  return {
-      "ticker": ticker,
-      "current_price": round(current_price, 2),
-      "sma_20": round(sma_20, 2),
-      "change_5d": round(change_5d, 2),
-      "rsi_14": round(rsi_14, 2),
-      "low_52": round(low_52, 2),
-      "high_52": round(high_52, 2),
-  }
-
 def get_ai_trade_recommendation(market_data, current_cash):
-  api_key = os.environ.get("GEMINI_API_KEY")
-  if not api_key:
-    raise ValueError("Chýba GEMINI_API_KEY v premenných prostredia!")
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("Chýba GEMINI_API_KEY v premenných prostredia!")
 
-  client = genai.Client(api_key=api_key)
+    client = genai.Client(api_key=api_key)
 
-  prompt = f"""
+    prompt = f"""
     Si skúsený portfólio manažér a kvantitatívny analytik. Vyhodnoť nasledujúce trhové dáta pre akciu {market_data['ticker']}:
     - Aktuálna trhová cena: {market_data['current_price']} EUR
     - SMA 20 (kĺzavý priemer): {market_data['sma_20']} EUR
     - 5-dňový pohyb ceny: {market_data['change_5d']}%
-    - RSI 14 (Index relatívnej sily): {market_data['rsi_14']}  (Poznámka: RSI < 30 znamená predaný trh/zľava, RSI > 70 znamená preplatený trh)
+    - RSI 14 (Index relatívnej sily): {market_data['rsi_14']} (Poznámka: RSI < 30 znamená predaný trh/zľava, RSI > 70 znamená preplatený trh)
     - 52-týždňové rozmedzie ceny: Min {market_data['low_52']} EUR — Max {market_data['high_52']} EUR
     - Voľná hotovosť na účte: {current_cash} EUR.
     
@@ -122,7 +111,7 @@ def get_ai_trade_recommendation(market_data, current_cash):
     shares (float),
     reasoning (string: stručné zdôvodnenie).
     """
-    
+
     max_retries = 5
     for attempt in range(1, max_retries + 1):
         try:
@@ -144,18 +133,18 @@ def get_ai_trade_recommendation(market_data, current_cash):
 def execute_virtual_trade(decision, market_data):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    
+
     cursor.execute("SELECT cash FROM account WHERE id = 1")
     cash = cursor.fetchone()[0]
-    
+
     ticker = market_data['ticker']
     price = market_data['current_price']
     action = decision.get('action', 'HOLD')
     shares = float(decision.get('shares', 0))
     reasoning = decision.get('reasoning', 'Bez dôvodu')
-    
+
     print(f"AI rozhodnutie pre {ticker}: {action} ({shares} ks) - {reasoning}")
-    
+
     if action == "BUY":
         cost = shares * price
         if cost <= cash and shares > 0:
@@ -177,28 +166,66 @@ def execute_virtual_trade(decision, market_data):
             "INSERT INTO trades (timestamp, ticker, action, shares, price, reasoning) VALUES (?, ?, ?, ?, ?, ?)",
             (datetime.now().isoformat(), ticker, action, 0, price, reasoning)
         )
-            
+
     conn.commit()
     conn.close()
+
+def log_daily_portfolio_snapshot():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT cash FROM account WHERE id = 1")
+    cash = cursor.fetchone()[0]
+
+    cursor.execute('''
+        SELECT ticker, SUM(CASE WHEN action='BUY' THEN shares ELSE -shares END) as total_shares
+        FROM trades
+        GROUP BY ticker
+        HAVING total_shares > 0
+    ''')
+    holdings = cursor.fetchall()
+
+    holdings_value = 0.0
+    for ticker, shares in holdings:
+        try:
+            stock = yf.Ticker(ticker)
+            price = float(stock.history(period="1d")['Close'].iloc[-1])
+            holdings_value += shares * price
+        except Exception as e:
+            print(f"Chyba pri aktualizácii ceny pre snapshot {ticker}: {e}")
+
+    total_value = cash + holdings_value
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    cursor.execute('''
+        INSERT INTO portfolio_history (timestamp, cash, holdings_value, total_value)
+        VALUES (?, ?, ?, ?)
+    ''', (timestamp, cash, holdings_value, total_value))
+
+    conn.commit()
+    conn.close()
+    print(f"📊 Snapshot portfólia uložený: Celkom {total_value:.2f} € (Cash: {cash:.2f} €, Akcie: {holdings_value:.2f} €)")
 
 if __name__ == "__main__":
     init_db()
     for ticker in TICKERS:
         try:
-            market_data = fetch_market_data(ticker)
-            
+            # TU BOLA ZMENA: voláme rozšírené dáta namiesto starých
+            market_data = fetch_extended_market_data(ticker)
+
             conn = sqlite3.connect(DB_NAME)
             cursor = conn.cursor()
             cursor.execute("SELECT cash FROM account WHERE id = 1")
             current_cash = cursor.fetchone()[0]
             conn.close()
-            
+
             decision = get_ai_trade_recommendation(market_data, current_cash)
             execute_virtual_trade(decision, market_data)
-            
-            # Krátka pauza medzi tickermi, aby sme nepreťažili API
+
             time.sleep(2)
         except Exception as e:
             print(f"Chyba pri spracovaní tickera {ticker}: {e}")
-            
+
+    # Uloženie celkového denného stavu portfólia pre graf
+    log_daily_portfolio_snapshot()
     print("Agent úspešne prešiel všetky tickery.")
