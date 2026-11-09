@@ -58,24 +58,64 @@ def fetch_market_data(ticker):
         "change_5d": round(change_5d, 2)
     }
 
+def fetch_extended_market_data(ticker):
+  print(f"Sťahujem rozšírené dáta pre {ticker} z Yahoo Finance...")
+  stock = yf.Ticker(ticker)
+  hist = stock.history(period="3mo")
+
+  if hist.empty:
+    raise ValueError(f"Nepodarilo sa stiahnuť dáta pre {ticker}")
+
+  current_price = float(hist["Close"].iloc[-1])
+  sma_20 = float(hist["Close"].rolling(window=20).mean().iloc[-1])
+  change_5d = float(
+      ((current_price - hist["Close"].iloc[-5]) / hist["Close"].iloc[-5]) * 100
+  )
+
+  # Výpočet RSI (14-dňové)
+  delta = hist["Close"].diff()
+  gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+  loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+  rs = gain / loss
+  rsi_14 = float(100 - (100 / (1 + rs)).iloc[-1])
+
+  # 52-týždňový rozsah
+  year_hist = stock.history(period="1y")
+  low_52 = float(year_hist["Low"].min())
+  high_52 = float(year_hist["High"].max())
+
+  return {
+      "ticker": ticker,
+      "current_price": round(current_price, 2),
+      "sma_20": round(sma_20, 2),
+      "change_5d": round(change_5d, 2),
+      "rsi_14": round(rsi_14, 2),
+      "low_52": round(low_52, 2),
+      "high_52": round(high_52, 2),
+  }
+
 def get_ai_trade_recommendation(market_data, current_cash):
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("Chýba GEMINI_API_KEY v premenných prostredia!")
-        
-    client = genai.Client(api_key=api_key)
-    
-    prompt = f"""
-    Si konzervatívny kvantitatívny analytik. Vyhodnot trhové dáta pre akciu {market_data['ticker']}:
-    - Aktuálna cena: {market_data['current_price']} EUR
+  api_key = os.environ.get("GEMINI_API_KEY")
+  if not api_key:
+    raise ValueError("Chýba GEMINI_API_KEY v premenných prostredia!")
+
+  client = genai.Client(api_key=api_key)
+
+  prompt = f"""
+    Si skúsený portfólio manažér a kvantitatívny analytik. Vyhodnoť nasledujúce trhové dáta pre akciu {market_data['ticker']}:
+    - Aktuálna trhová cena: {market_data['current_price']} EUR
     - SMA 20 (kĺzavý priemer): {market_data['sma_20']} EUR
-    - Zmena za 5 dní: {market_data['change_5d']}%
-    - Celková dostupná hotovosť na účte: {current_cash} EUR.
+    - 5-dňový pohyb ceny: {market_data['change_5d']}%
+    - RSI 14 (Index relatívnej sily): {market_data['rsi_14']}  (Poznámka: RSI < 30 znamená predaný trh/zľava, RSI > 70 znamená preplatený trh)
+    - 52-týždňové rozmedzie ceny: Min {market_data['low_52']} EUR — Max {market_data['high_52']} EUR
+    - Voľná hotovosť na účte: {current_cash} EUR.
     
-    Pravidlá tradingu:
-    - Ak vidíš silný rastový trend (napr. cena nad SMA 20), môžeš zvoliť "BUY".
-    - Vypočítaj presný počet akcií (`shares`), ktoré chceš kúpiť, pričom celková suma nesmie presiahnuť 20% dostupnej hotovosti.
-    - Ak si nie si istý alebo trh klesá, zvoľ "HOLD" (vtedy zadaj shares: 0).
+    Tvoja stratégia:
+    1. **Momentum (Rast):** Ak je cena nad SMA 20 a RSI je v zdravom rozmedzí (40-60), zváž BUY na pokračovanie trendu.
+    2. **Value / Buy the Dip (Nákup v zľave):** Ak cena poklesla (napr. change_5d je záporná alebo RSI < 35) a akcia sa nachádza bližšie k 52-týždňovému číslu Low, ale historický fondament firmy je silný, **aktívne hľadaj príležitosť na nákup v zľave (BUY)**.
+    3. Ak je riziko vysoké alebo signály protichodné, zvol "HOLD".
+    
+    Risk pravidlo: Maximálne 20% voľnej hotovosti na jeden obchod.
     
     Vráť odpoveď EXKLUZÍVNE vo formáte JSON s týmito kľúčmi:
     action (string: "BUY" alebo "HOLD"),
