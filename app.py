@@ -40,7 +40,6 @@ try:
   holdings_summary = []
 
   if not trades_df.empty:
-    # Zistíme čistý počet akcií pre každý ticker
     summary = (
         trades_df.groupby("ticker")
         .apply(
@@ -73,7 +72,7 @@ try:
   pnl = total_portfolio_value - 1000.0  # Vstupný kapitál bol 1000 EUR
   pnl_pct = (pnl / 1000.0) * 100
 
-  # Metriky navrchu
+  # Metriky navrchu (OPRAVENÉ volanie 4. metriky)
   col1, col2, col3, col4 = st.columns(4)
   col1.metric(
       label="Celková hodnota (Trhová)",
@@ -85,7 +84,8 @@ try:
       label="Aktuálna hodnota akcií", value=f"{current_holdings_value:.2f} EUR"
   )
   col4.metric(
-      label="Počet otvorených pozícií", len(holdings_summary) if holdings_summary else 0
+      label="Počet otvorených pozícií",
+      value=len(holdings_summary) if holdings_summary else 0,
   )
 
   # Graf vývoja portfólia
