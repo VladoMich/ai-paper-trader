@@ -2,6 +2,7 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+from agent import run_trading_bot  # Importujeme funkciu na spustenie agenta
 
 st.set_page_config(
     page_title="AI Paper Trading Dashboard", page_icon="📈", layout="wide"
@@ -11,6 +12,23 @@ st.title("🤖 AI Paper Trading Agent – Dashboard")
 st.markdown(
     "Sleduje aktuálne trhové výkony, stav hotovosti a rozhodnutia AI tradera."
 )
+
+# --- SIDEBAR: Ovládanie a manuálne spustenie ---
+with st.sidebar:
+  st.header("⚙️ Ovládanie agenta")
+  st.markdown(
+      "Tu môžeš spustiť okamžitú analýzu trhu a obchodovanie bez čakania na"
+      " GitHub Actions."
+  )
+
+  if st.button("🚀 Spustiť AI Analýzu hneď", type="primary"):
+    with st.spinner("Prebieha sťahovanie dát a analýza cez Gemini..."):
+      try:
+        run_trading_bot()
+        st.success("Analýza úspešne dokončená!")
+        st.rerun()  # Obnoví aplikáciu a načíta nové dáta
+      except Exception as e:
+        st.error(f"Chyba pri behu agenta: {e}")
 
 
 def load_data():
@@ -35,47 +53,71 @@ try:
       account_df["cash"].iloc[0] if not account_df.empty else 1000.0
   )
 
-  # Výpočet REÁLNEJ trhovej hodnoty otvorených pozícií (Mark-to-Market)
+  # Výpočet reálnej hodnoty a P&L pre jednotlivé pozície
   current_holdings_value = 0.0
   holdings_summary = []
 
   if not trades_df.empty:
-    summary = (
-        trades_df.groupby("ticker")
-        .apply(
-            lambda x: (x[x["action"] == "BUY"]["shares"].sum())
-            - (x[x["action"] == "SELL"]["shares"].sum())
-        )
-        .reset_index(name="net_shares")
-    )
-    active_positions = summary[summary["net_shares"] > 0]
+    # Zrátame čisté akcie a priemernú nákupnú cenu pre každú pozíciu
+    # Prechádzame obchody v chronologickom poradí
+    chronological_trades = trades_df.sort_values("timestamp", ascending=True)
 
-    for _, row in active_positions.iterrows():
-      ticker = row["ticker"]
-      shares = row["net_shares"]
-      try:
-        live_price = float(
-            yf.Ticker(ticker).history(period="1d")["Close"].iloc[-1]
-        )
-        value = shares * live_price
-        current_holdings_value += value
-        holdings_summary.append({
-            "Ticker": ticker,
-            "Počet ks": round(shares, 4),
-            "Aktuálna cena": f"{live_price:.2f} €",
-            "Trhová hodnota": f"{value:.2f} €",
-        })
-      except Exception:
-        pass
+    positions = {}
+    for _, row in chronological_trades.iterrows():
+      t = row["ticker"]
+      action = row["action"]
+      shares = row["shares"]
+      price = row["price"]
+
+      if t not in positions:
+        positions[t] = {"shares": 0.0, "total_cost": 0.0}
+
+      if action == "BUY":
+        positions[t]["shares"] += shares
+        positions[t]["total_cost"] += shares * price
+      elif action == "SELL":
+        if positions[t]["shares"] > 0:
+          # Znížime náklady proporcionálne
+          avg_p = positions[t]["total_cost"] / positions[t]["shares"]
+          positions[t]["shares"] -= shares
+          positions[t]["total_cost"] -= shares * avg_p
+
+    for ticker, pos in positions.items():
+      if pos["shares"] > 0.0001:
+        avg_buy_price = pos["total_cost"] / pos["shares"]
+        try:
+          live_price = float(
+              yf.Ticker(ticker).history(period="1d")["Close"].iloc[-1]
+          )
+          market_val = pos["shares"] * live_price
+          profit_loss = market_val - pos["total_cost"]
+          profit_loss_pct = (
+              (profit_loss / pos["total_cost"]) * 100
+              if pos["total_cost"] > 0
+              else 0
+          )
+
+          current_holdings_value += market_val
+          holdings_summary.append({
+              "Ticker": ticker,
+              "Počet ks": round(pos["shares"], 4),
+              "Priem. nákup (€)": round(avg_buy_price, 2),
+              "Aktuálna cena (€)": round(live_price, 2),
+              "Trhová hodnota (€)": round(market_val, 2),
+              "Zisk / Strata (€)": round(profit_loss, 2),
+              "Zisk / Strata (%)": round(profit_loss_pct, 2),
+          })
+        except Exception:
+          pass
 
   total_portfolio_value = current_cash + current_holdings_value
-  pnl = total_portfolio_value - 1000.0  # Vstupný kapitál bol 1000 EUR
+  pnl = total_portfolio_value - 1000.0
   pnl_pct = (pnl / 1000.0) * 100
 
-  # Metriky navrchu (OPRAVENÉ volanie 4. metriky)
+  # Metriky navrchu
   col1, col2, col3, col4 = st.columns(4)
   col1.metric(
-      label="Celková hodnota (Trhová)",
+      label="Celková hodnota",
       value=f"{total_portfolio_value:.2f} EUR",
       delta=f"{pnl:+.2f} EUR ({pnl_pct:+.2f}%)",
   )
@@ -84,7 +126,7 @@ try:
       label="Aktuálna hodnota akcií", value=f"{current_holdings_value:.2f} EUR"
   )
   col4.metric(
-      label="Počet otvorených pozícií",
+      label="Otvorené pozície",
       value=len(holdings_summary) if holdings_summary else 0,
   )
 
@@ -104,9 +146,9 @@ try:
 
   st.divider()
 
-  # Zobrazenie otvorených pozícií ak existujú
+  # Zobrazenie otvorených pozícií s P&L
   if holdings_summary:
-    st.subheader("📦 Aktuálne držané akcie")
+    st.subheader("📦 Aktuálne držané akcie a ich výkonnosť (P&L)")
     st.dataframe(
         pd.DataFrame(holdings_summary),
         use_container_width=True,
@@ -120,12 +162,16 @@ try:
 
     st.markdown("### 🔍 Detailné zdôvodnenia AI pre jednotlivé kroky")
     for index, row in trades_df.iterrows():
-      badge = "🟢" if row["action"] == "BUY" else "⚪"
+      badge = (
+          "🟢"
+          if row["action"] == "BUY"
+          else ("🔴" if row["action"] == "SELL" else "⚪")
+      )
       with st.expander(
           f"{badge} [{str(row['timestamp'])[:19]}] Ticker: **{row['ticker']}**"
           f" | Akcia: **{row['action']}** | Počet: {row['shares']} ks"
       ):
-        st.markdown(f"**Nákupná cena:** {row['price']} EUR")
+        st.markdown(f"**Cena:** {row['price']} EUR")
         st.markdown(f"**Zdôvodnenie od AI:** {row['reasoning']}")
   else:
     st.info("Zatiaľ neboli zaznamenané žiadne obchody.")
