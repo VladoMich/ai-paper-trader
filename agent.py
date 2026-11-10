@@ -61,14 +61,12 @@ def fetch_extended_market_data(ticker):
         ((current_price - hist["Close"].iloc[-5]) / hist["Close"].iloc[-5]) * 100
     )
 
-    # Výpočet RSI (14-dňové)
     delta = hist["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     rsi_14 = float(100 - (100 / (1 + rs)).iloc[-1])
 
-    # 52-týždňový rozsah
     year_hist = stock.history(period="1y")
     low_52 = float(year_hist["Low"].min())
     high_52 = float(year_hist["High"].max())
@@ -83,31 +81,52 @@ def fetch_extended_market_data(ticker):
         "high_52": round(high_52, 2),
     }
 
-def get_ai_trade_recommendation(market_data, current_cash):
+def get_current_position(ticker):
+    """Zistí, koľko kusov daného tickera aktuálne vlastníme a za akú priemernú cenu."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT action, shares, price FROM trades WHERE ticker = ?", (ticker,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    net_shares = 0.0
+    total_cost = 0.0
+    for action, shares, price in rows:
+        if action == "BUY":
+            net_shares += shares
+            total_cost += shares * price
+        elif action == "SELL":
+            net_shares -= shares
+
+    avg_price = (total_cost / net_shares) if net_shares > 0 else 0.0
+    return {"shares": round(net_shares, 4), "avg_price": round(avg_price, 2)}
+
+def get_ai_trade_recommendation(market_data, current_cash, position):
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("Chýba GEMINI_API_KEY v premenných prostredia!")
 
     client = genai.Client(api_key=api_key)
 
+    holding_info = f"Aktuálne vlastníš {position['shares']} ks tejto akcie za priemernú nákupnú cenu {position['avg_price']} EUR." if position['shares'] > 0 else "Aktuálne nevlastníš žiadne kusy tejto akcie."
+
     prompt = f"""
-    Si skúsený portfólio manažér a kvantitatívny analytik. Vyhodnoť nasledujúce trhové dáta pre akciu {market_data['ticker']}:
+    Si skúsený portfólio manažér a kvantitatívny analytik. Vyhodnoť trhové dáta pre akciu {market_data['ticker']}:
     - Aktuálna trhová cena: {market_data['current_price']} EUR
     - SMA 20 (kĺzavý priemer): {market_data['sma_20']} EUR
     - 5-dňový pohyb ceny: {market_data['change_5d']}%
-    - RSI 14 (Index relatívnej sily): {market_data['rsi_14']} (Poznámka: RSI < 30 znamená predaný trh/zľava, RSI > 70 znamená preplatený trh)
-    - 52-týždňové rozmedzie ceny: Min {market_data['low_52']} EUR — Max {market_data['high_52']} EUR
-    - Voľná hotovosť na účte: {current_cash} EUR.
+    - RSI 14: {market_data['rsi_14']} (RSI < 30 = zľava, RSI > 70 = preplatený)
+    - 52-týždňové rozmedzie: Min {market_data['low_52']} EUR — Max {market_data['high_52']} EUR
+    - Voľná hotovosť: {current_cash} EUR
+    - Stav portfólia pre tento ticker: {holding_info}
     
     Tvoja stratégia:
-    1. **Momentum (Rast):** Ak je cena nad SMA 20 a RSI je v zdravom rozmedzí (40-60), zváž BUY na pokračovanie trendu.
-    2. **Value / Buy the Dip (Nákup v zľave):** Ak cena poklesla (napr. change_5d je záporná alebo RSI < 35) a akcia sa nachádza bližšie k 52-týždňovému číslu Low, ale historický fondament firmy je silný, **aktívne hľadaj príležitosť na nákup v zľave (BUY)**.
-    3. Ak je riziko vysoké alebo signály protichodné, zvol "HOLD".
-    
-    Risk pravidlo: Maximálne 20% voľnej hotovosti na jeden obchod.
+    1. **BUY (Nákup/Zľava):** Ak je cena pod SMA 20 alebo RSI < 35 (Buy the Dip), alebo vidíš silný rastový potenciál, zváž "BUY" (max 20% hotovosti na nákup).
+    2. **SELL (Predaj):** Ak už akciu vlastníš a cena výrazne narasté (Take-profit) alebo naopak klesá pod rizikovú úroveň (Stop-loss), prípadne indikátory ukazujú silný pokles, môžeš zvoliť "SELL" a predať všetky alebo časť držaných kusov (`shares`).
+    3. **HOLD:** Ak nie je dôvod na zmenu, zvoľ "HOLD" (shares: 0).
     
     Vráť odpoveď EXKLUZÍVNE vo formáte JSON s týmito kľúčmi:
-    action (string: "BUY" alebo "HOLD"),
+    action (string: "BUY", "SELL" alebo "HOLD"),
     shares (float),
     reasoning (string: stručné zdôvodnenie).
     """
@@ -130,7 +149,7 @@ def get_ai_trade_recommendation(market_data, current_cash):
             else:
                 raise RuntimeError("Gemini API zlyhalo po viacerých pokusoch.")
 
-def execute_virtual_trade(decision, market_data):
+def execute_virtual_trade(decision, market_data, position):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
@@ -156,10 +175,26 @@ def execute_virtual_trade(decision, market_data):
             )
             print(f"✅ NÁKUP: {shares}x {ticker} za {cost:.2f}€")
         else:
-            print("❌ Nedostatok hotovosti pre tento nákup, mením na HOLD.")
+            print("❌ Nedostatok hotovosti pre nákup, mením na HOLD.")
             cursor.execute(
                 "INSERT INTO trades (timestamp, ticker, action, shares, price, reasoning) VALUES (?, ?, ?, ?, ?, ?)",
-                (datetime.now().isoformat(), ticker, "HOLD", 0, price, "Nedostatok hotovosti na nákup: " + reasoning)
+                (datetime.now().isoformat(), ticker, "HOLD", 0, price, "Nedostatok hotovosti: " + reasoning)
+            )
+    elif action == "SELL":
+        if shares > 0 and shares <= position['shares']:
+            revenue = shares * price
+            new_cash = cash + revenue
+            cursor.execute("UPDATE account SET cash = ? WHERE id = 1", (new_cash,))
+            cursor.execute(
+                "INSERT INTO trades (timestamp, ticker, action, shares, price, reasoning) VALUES (?, ?, ?, ?, ?, ?)",
+                (datetime.now().isoformat(), ticker, action, shares, price, reasoning)
+            )
+            print(f"✅ PREDAJ: {shares}x {ticker} za {revenue:.2f}€")
+        else:
+            print("❌ Neplatný počet kusov na predaj, mením na HOLD.")
+            cursor.execute(
+                "INSERT INTO trades (timestamp, ticker, action, shares, price, reasoning) VALUES (?, ?, ?, ?, ?, ?)",
+                (datetime.now().isoformat(), ticker, "HOLD", 0, price, "Neplatný predaj: " + reasoning)
             )
     else:
         cursor.execute(
@@ -206,12 +241,12 @@ def log_daily_portfolio_snapshot():
     conn.close()
     print(f"📊 Snapshot portfólia uložený: Celkom {total_value:.2f} € (Cash: {cash:.2f} €, Akcie: {holdings_value:.2f} €)")
 
-if __name__ == "__main__":
+def run_trading_bot():
     init_db()
     for ticker in TICKERS:
         try:
-            # TU BOLA ZMENA: voláme rozšírené dáta namiesto starých
             market_data = fetch_extended_market_data(ticker)
+            position = get_current_position(ticker)
 
             conn = sqlite3.connect(DB_NAME)
             cursor = conn.cursor()
@@ -219,13 +254,15 @@ if __name__ == "__main__":
             current_cash = cursor.fetchone()[0]
             conn.close()
 
-            decision = get_ai_trade_recommendation(market_data, current_cash)
-            execute_virtual_trade(decision, market_data)
+            decision = get_ai_trade_recommendation(market_data, current_cash, position)
+            execute_virtual_trade(decision, market_data, position)
 
             time.sleep(2)
         except Exception as e:
             print(f"Chyba pri spracovaní tickera {ticker}: {e}")
 
-    # Uloženie celkového denného stavu portfólia pre graf
     log_daily_portfolio_snapshot()
     print("Agent úspešne prešiel všetky tickery.")
+
+if __name__ == "__main__":
+    run_trading_bot()
